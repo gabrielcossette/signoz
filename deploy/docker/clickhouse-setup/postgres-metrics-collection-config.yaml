@@ -36,17 +36,11 @@ processors:
       hostname_sources: ["os"]
 
 exporters:
-  # export to SigNoz cloud
-  otlp/postgres:
-    endpoint: "${env:OTLP_DESTINATION_ENDPOINT}"
-    tls:
-      insecure: false
-
   # export to local collector
-  # otlp/postgres:
-  #   endpoint: "localhost:4317"
-  #   tls:
-  #     insecure: true
+  otlp/postgres:
+    endpoint: "localhost:4317"
+    tls:
+      insecure: true
 
 service:
   pipelines:
