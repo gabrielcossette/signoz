@@ -158,7 +158,7 @@ services:
   # Notes for Maintainers/Contributors who will change Line Numbers of Frontend & Query-Section. Please Update Line Numbers in `./scripts/commentLinesForSetup.sh` & `./CONTRIBUTING.md`
 
   query-service:
-    image: signoz/query-service:${DOCKER_TAG:-0.56.0}
+    image: signoz/query-service:${DOCKER_TAG:-0.58.1}
     container_name: signoz-query-service
     command:
       [
@@ -197,7 +197,7 @@ services:
     <<: *db-depend
 
   frontend:
-    image: signoz/frontend:${DOCKER_TAG:-0.56.0}
+    image: signoz/frontend:${DOCKER_TAG:-0.58.1}
     container_name: signoz-frontend
     restart: on-failure
     depends_on:
@@ -221,7 +221,7 @@ services:
 
 
   otel-collector:
-    image: signoz/signoz-otel-collector:${OTELCOL_TAG:-0.102.12}
+    image: signoz/signoz-otel-collector:${OTELCOL_TAG:-0.111.8}
     container_name: signoz-otel-collector
     command:
       [
