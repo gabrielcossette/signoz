@@ -80,6 +80,17 @@ var TimestampSortFeature = GetOrDefaultEnv("TIMESTAMP_SORT_FEATURE", "true")
 
 var PreferRPMFeature = GetOrDefaultEnv("PREFER_RPM_FEATURE", "false")
 
+// TODO(srikanthccv): remove after backfilling is done
+func UseMetricsPreAggregation() bool {
+	return GetOrDefaultEnv("USE_METRICS_PRE_AGGREGATION", "true") == "true"
+}
+
+func EnableHostsInfraMonitoring() bool {
+	return GetOrDefaultEnv("ENABLE_INFRA_METRICS", "true") == "true"
+}
+
+var KafkaSpanEval = GetOrDefaultEnv("KAFKA_SPAN_EVAL", "false")
+
 func IsDurationSortFeatureEnabled() bool {
 	isDurationSortFeatureEnabledStr := DurationSortFeature
 	isDurationSortFeatureEnabledBool, err := strconv.ParseBool(isDurationSortFeatureEnabledStr)
@@ -220,14 +231,21 @@ var GroupByColMap = map[string]struct{}{
 }
 
 const (
-	SIGNOZ_METRIC_DBNAME                      = "signoz_metrics"
-	SIGNOZ_SAMPLES_V4_TABLENAME               = "distributed_samples_v4"
-	SIGNOZ_TRACE_DBNAME                       = "signoz_traces"
-	SIGNOZ_SPAN_INDEX_TABLENAME               = "distributed_signoz_index_v2"
-	SIGNOZ_TIMESERIES_v4_LOCAL_TABLENAME      = "time_series_v4"
-	SIGNOZ_TIMESERIES_v4_6HRS_LOCAL_TABLENAME = "time_series_v4_6hrs"
-	SIGNOZ_TIMESERIES_v4_1DAY_LOCAL_TABLENAME = "time_series_v4_1day"
-	SIGNOZ_TIMESERIES_v4_1DAY_TABLENAME       = "distributed_time_series_v4_1day"
+	SIGNOZ_METRIC_DBNAME                       = "signoz_metrics"
+	SIGNOZ_SAMPLES_V4_TABLENAME                = "distributed_samples_v4"
+	SIGNOZ_SAMPLES_V4_AGG_5M_TABLENAME         = "distributed_samples_v4_agg_5m"
+	SIGNOZ_SAMPLES_V4_AGG_30M_TABLENAME        = "distributed_samples_v4_agg_30m"
+	SIGNOZ_EXP_HISTOGRAM_TABLENAME             = "distributed_exp_hist"
+	SIGNOZ_TRACE_DBNAME                        = "signoz_traces"
+	SIGNOZ_SPAN_INDEX_TABLENAME                = "distributed_signoz_index_v2"
+	SIGNOZ_SPAN_INDEX_LOCAL_TABLENAME          = "signoz_index_v2"
+	SIGNOZ_SPAN_INDEX_V3                       = "distributed_signoz_index_v3"
+	SIGNOZ_SPAN_INDEX_V3_LOCAL_TABLENAME       = "signoz_index_v3"
+	SIGNOZ_TIMESERIES_v4_LOCAL_TABLENAME       = "time_series_v4"
+	SIGNOZ_TIMESERIES_v4_6HRS_LOCAL_TABLENAME  = "time_series_v4_6hrs"
+	SIGNOZ_TIMESERIES_v4_1DAY_LOCAL_TABLENAME  = "time_series_v4_1day"
+	SIGNOZ_TIMESERIES_v4_1WEEK_LOCAL_TABLENAME = "time_series_v4_1week"
+	SIGNOZ_TIMESERIES_v4_1DAY_TABLENAME        = "distributed_time_series_v4_1day"
 )
 
 var TimeoutExcludedRoutes = map[string]bool{
@@ -310,20 +328,26 @@ var StaticSelectedLogFields = []model.LogField{
 
 const (
 	LogsSQLSelect = "SELECT " +
-		"timestamp, id, trace_id, span_id, trace_flags, severity_text, severity_number, body," +
+		"timestamp, id, trace_id, span_id, trace_flags, severity_text, severity_number, scope_name, scope_version, body," +
 		"CAST((attributes_string_key, attributes_string_value), 'Map(String, String)') as  attributes_string," +
 		"CAST((attributes_int64_key, attributes_int64_value), 'Map(String, Int64)') as  attributes_int64," +
 		"CAST((attributes_float64_key, attributes_float64_value), 'Map(String, Float64)') as  attributes_float64," +
 		"CAST((attributes_bool_key, attributes_bool_value), 'Map(String, Bool)') as  attributes_bool," +
-		"CAST((resources_string_key, resources_string_value), 'Map(String, String)') as resources_string "
+		"CAST((resources_string_key, resources_string_value), 'Map(String, String)') as resources_string," +
+		"CAST((scope_string_key, scope_string_value), 'Map(String, String)') as scope "
 	LogsSQLSelectV2 = "SELECT " +
-		"timestamp, id, trace_id, span_id, trace_flags, severity_text, severity_number, body, " +
+		"timestamp, id, trace_id, span_id, trace_flags, severity_text, severity_number, scope_name, scope_version, body, " +
 		"attributes_string, " +
 		"attributes_number, " +
 		"attributes_bool, " +
-		"resources_string "
-	TracesExplorerViewSQLSelectWithSubQuery = "WITH subQuery AS (SELECT distinct on (traceID) traceID, durationNano, " +
-		"serviceName, name FROM %s.%s WHERE parentSpanID = '' AND %s %s ORDER BY durationNano DESC "
+		"resources_string, " +
+		"scope_string "
+	TracesExplorerViewSQLSelectWithSubQuery = "(SELECT traceID, durationNano, " +
+		"serviceName, name FROM %s.%s WHERE parentSpanID = '' AND %s %s ORDER BY durationNano DESC LIMIT 1 BY traceID "
+	TracesExplorerViewSQLSelectBeforeSubQuery = "SELECT subQuery.serviceName, subQuery.name, count() AS " +
+		"span_count, subQuery.durationNano, subQuery.traceID AS traceID FROM %s.%s INNER JOIN ( SELECT * FROM "
+	TracesExplorerViewSQLSelectAfterSubQuery = "AS inner_subquery ) AS subQuery ON %s.%s.traceID = subQuery.traceID WHERE %s " +
+		"GROUP BY subQuery.traceID, subQuery.durationNano, subQuery.name, subQuery.serviceName ORDER BY subQuery.durationNano desc LIMIT 1 BY subQuery.traceID;"
 	TracesExplorerViewSQLSelectQuery = "SELECT subQuery.serviceName, subQuery.name, count() AS " +
 		"span_count, subQuery.durationNano, traceID FROM %s.%s GLOBAL INNER JOIN subQuery ON %s.traceID = subQuery.traceID GROUP " +
 		"BY traceID, subQuery.durationNano, subQuery.name, subQuery.serviceName ORDER BY subQuery.durationNano desc;"
@@ -341,7 +365,9 @@ var ReservedColumnTargetAliases = map[string]struct{}{
 }
 
 // logsPPLPfx is a short constant for logsPipelinePrefix
-const LogsPPLPfx = "logstransform/pipeline_"
+// TODO(Raj): Remove old prefix after new processor based pipelines have been rolled out
+const LogsPPLPfx = "signozlogspipeline/pipeline_"
+const OldLogsPPLPfx = "logstransform/pipeline_"
 
 const IntegrationPipelineIdPrefix = "integration"
 
@@ -392,6 +418,18 @@ var StaticFieldsLogsV3 = map[string]v3.AttributeKey{
 		Type:     v3.AttributeKeyTypeUnspecified,
 		IsColumn: true,
 	},
+	"scope_name": {
+		Key:      "scope_name",
+		DataType: v3.AttributeKeyDataTypeString,
+		Type:     v3.AttributeKeyTypeUnspecified,
+		IsColumn: true,
+	},
+	"scope_version": {
+		Key:      "scope_version",
+		DataType: v3.AttributeKeyDataTypeString,
+		Type:     v3.AttributeKeyTypeUnspecified,
+		IsColumn: true,
+	},
 }
 
 const SigNozOrderByValue = "#SIGNOZ_VALUE"
@@ -408,3 +446,147 @@ const MaxFilterSuggestionsExamplesLimit = 10
 
 var SpanRenderLimitStr = GetOrDefaultEnv("SPAN_RENDER_LIMIT", "2500")
 var MaxSpansInTraceStr = GetOrDefaultEnv("MAX_SPANS_IN_TRACE", "250000")
+
+var StaticFieldsTraces = map[string]v3.AttributeKey{
+	"timestamp": {},
+	"traceID": {
+		Key:      "traceID",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"spanID": {
+		Key:      "spanID",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"parentSpanID": {
+		Key:      "parentSpanID",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"name": {
+		Key:      "name",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"serviceName": {
+		Key:      "serviceName",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"kind": {
+		Key:      "kind",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"spanKind": {
+		Key:      "spanKind",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"durationNano": {
+		Key:      "durationNano",
+		DataType: v3.AttributeKeyDataTypeFloat64,
+		IsColumn: true,
+	},
+	"statusCode": {
+		Key:      "statusCode",
+		DataType: v3.AttributeKeyDataTypeFloat64,
+		IsColumn: true,
+	},
+	"hasError": {
+		Key:      "hasError",
+		DataType: v3.AttributeKeyDataTypeBool,
+		IsColumn: true,
+	},
+	"statusMessage": {
+		Key:      "statusMessage",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"statusCodeString": {
+		Key:      "statusCodeString",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"externalHttpMethod": {
+		Key:      "externalHttpMethod",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"externalHttpUrl": {
+		Key:      "externalHttpUrl",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"dbSystem": {
+		Key:      "dbSystem",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"dbName": {
+		Key:      "dbName",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"dbOperation": {
+		Key:      "dbOperation",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"peerService": {
+		Key:      "peerService",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"httpMethod": {
+		Key:      "httpMethod",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"httpUrl": {
+		Key:      "httpUrl",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"httpRoute": {
+		Key:      "httpRoute",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"httpHost": {
+		Key:      "httpHost",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"msgSystem": {
+		Key:      "msgSystem",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"msgOperation": {
+		Key:      "msgOperation",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"rpcSystem": {
+		Key:      "rpcSystem",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"rpcService": {
+		Key:      "rpcService",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"rpcMethod": {
+		Key:      "rpcMethod",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+	"responseStatusCode": {
+		Key:      "responseStatusCode",
+		DataType: v3.AttributeKeyDataTypeString,
+		IsColumn: true,
+	},
+}
